@@ -1,0 +1,6 @@
+{
+    "prefix": "!",
+    "token": "YOUR-DISCORD-BOT-TOKEN",
+    "youtubeApiKey": "YOUR-YOUTUBE-API-KEY",
+    "maxResults": 10
+}
