@@ -1,10 +1,7 @@
-//import fetch from 'node-fetch';
-
 const { Client, Intents } = require("discord.js");
 const { prefix, token, youtubeApiKey, maxResults } = require("./config.json");
 const ytdl = require("ytdl-core");
 const axios = require('axios');
-//const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const client = new Client({ intents: [Intents.FLAGS.GUILD_VOICE_STATES, Intents.FLAGS.GUILD_MESSAGES, Intents.FLAGS.GUILDS] });
 
@@ -38,7 +35,7 @@ client.on("message", async message => {
     stop(message, serverQueue);
     return;
   } else if (message.content.startsWith(`${prefix}queue`)) {
-    queue(message, serverQueue);
+    checkQueue(message, serverQueue);
     return;
   } else {
     message.channel.send("You need to enter a valid command!");
@@ -50,11 +47,16 @@ async function search(message){
   const words = message.content.split(" ");
   words.shift();
 
-  const searchStringUrlEncoded = encodeURIComponent(searchString);
+  const searchStringUrlEncoded = encodeURIComponent(words.join(" "));
 
-  const response = await axios.get(`https://youtube.googleapis.com/youtube/v3/search?key=${youtubeApiKey}&part=snippet&type=video&maxResults=${maxResults.toString()}&q=${searchStringUrlEncoded}`);
+  try {
+    const response = await axios.get(`https://youtube.googleapis.com/youtube/v3/search?key=${youtubeApiKey}&part=snippet&type=video&maxResults=${maxResults.toString()}&q=${searchStringUrlEncoded}`);
 
-  return response?.data?.items[0]?.id?.videoId;  
+    return response?.data?.items[0]?.id?.videoId;  
+  }
+  catch (error) {
+    console.log(error);
+  }
 }
 
 async function execute(message, serverQueue) {
@@ -127,8 +129,15 @@ function stop(message, serverQueue) {
   serverQueue.connection.dispatcher.end();
 }
 
-function queue(message, serverQueue) {
+function checkQueue(message, serverQueue) {
 
+  queueString = "Current Queue:\n";
+
+  serverQueue.songs.forEach((song, index) => {
+    queueString += `${(index + 1).toString()}.  ${song.title}\n`;
+  })
+
+  return message.channel.send(queueString);
 }
 
 function play(guild, song) {
