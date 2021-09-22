@@ -2,8 +2,11 @@ const { Client, Intents } = require("discord.js");
 const { prefix, token, youtubeApiKey, maxResults } = require("./config.json");
 const ytdl = require("ytdl-core");
 const axios = require('axios');
+const logger = require("discordjs-logger");
 
 const client = new Client({ intents: [Intents.FLAGS.GUILD_VOICE_STATES, Intents.FLAGS.GUILD_MESSAGES, Intents.FLAGS.GUILDS] });
+
+logger.all(client);
 
 const queue = new Map();
 
@@ -37,8 +40,6 @@ client.on("message", async message => {
   } else if (message.content.startsWith(`${prefix}queue`)) {
     checkQueue(message, serverQueue);
     return;
-  } else {
-    message.channel.send("You need to enter a valid command!");
   }
 });
 
@@ -52,7 +53,7 @@ async function search(message){
   try {
     const response = await axios.get(`https://youtube.googleapis.com/youtube/v3/search?key=${youtubeApiKey}&part=snippet&type=video&maxResults=${maxResults.toString()}&q=${searchStringUrlEncoded}`);
 
-    return response?.data?.items[0]?.id?.videoId;  
+    return response?.data?.items[0]?.id?.videoId; 
   }
   catch (error) {
     console.log(error);
@@ -78,7 +79,8 @@ async function execute(message, serverQueue) {
   const songInfo = await ytdl.getInfo(`https://www.youtube.com/watch?v=${songUrl}`);
   const song = {
     title: songInfo.videoDetails.title,
-    url: songInfo.videoDetails.video_url
+    url: songInfo.videoDetails.video_url,
+    duration: songInfo.videoDetails.lengthSeconds
   };
 
   if (!serverQueue) {
@@ -117,7 +119,7 @@ function skip(message, serverQueue) {
     );
   if (!serverQueue)
     return message.channel.send("There is no song that I could skip!");
-  serverQueue.connection.dispatcher.end();
+  serverQueue.connection.dispatcher.destroy();
 }
 
 function stop(message, serverQueue) {
@@ -129,12 +131,32 @@ function stop(message, serverQueue) {
   serverQueue.connection.dispatcher.end();
 }
 
-function checkQueue(message, serverQueue) {
+function secondsToTime(e){
+  var h = Math.floor(e / 3600).toString().padStart(2,'0'),
+      m = Math.floor(e % 3600 / 60).toString().padStart(2,'0'),
+      s = Math.floor(e % 60).toString().padStart(2,'0');
+  
+  return h + ':' + m + ':' + s;
+}
 
-  queueString = "Current Queue:\n";
+function totalQueueTime(songs){
+
+  total = 0;
+  songs.forEach(song => {
+    total += parseInt(song.duration);
+  })
+
+  return secondsToTime(total);
+}
+
+function checkQueue(message, serverQueue) {
+  
+  if(!serverQueue?.songs) return;
+
+  queueString = `Total Time: (${totalQueueTime(serverQueue.songs)}) \nCurrent Queue:\n`;
 
   serverQueue.songs.forEach((song, index) => {
-    queueString += `${(index + 1).toString()}.  ${song.title}\n`;
+    queueString += `${(index + 1).toString()}.  ${song.title}  --  (${secondsToTime(song.duration)})\n`;
   })
 
   return message.channel.send(queueString);
