@@ -10,7 +10,7 @@
     "discordjs-logger": "^2.0.0",
     "ffmpeg": "^0.0.4",
     "fluent-ffmpeg": "^2.1.2",
-    "node": "16.6.1",
+    "node": "14.17.6",
     "ytdl-core": "^4.9.1"
   },
   "scripts": {
