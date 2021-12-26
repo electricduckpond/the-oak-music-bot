@@ -64,6 +64,9 @@ async function search(message){
     return response?.data?.items[0]?.id?.videoId; 
   }
   catch (error) {
+    message.channel.send(
+      error.message
+    );
     console.log(error);
   }
 }
@@ -99,8 +102,8 @@ async function execute(message, serverQueue) {
       songInfo = await ytdl.getInfo(`https://www.youtube.com/watch?v=${songUrl}`);
   }
   catch (e) {
-    console.log(err);
-    return message.channel.send(err);
+    console.log(e);
+    return message.channel.send(e.toString());
   }
 
   if (!songInfo?.videoDetails) {
@@ -249,7 +252,11 @@ function play(guild, song) {
       serverQueue.songs.shift();
       play(guild, serverQueue.songs[0]);
     })
-    .on("error", error => console.error(error));
+    .on("error", (error) => {
+      serverQueue.songs.shift();
+      play(guild, serverQueue.songs[0]);
+      console.error(error.toString());      
+    });
   dispatcher.setVolumeLogarithmic(serverQueue.volume / 5);
   serverQueue.textChannel.send(`Start playing: **${song.title}**`);
 }
