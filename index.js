@@ -7,6 +7,8 @@ const client = new Client({ intents: [Intents.FLAGS.GUILD_VOICE_STATES, Intents.
 
 const queue = new Map();
 
+let timeout;
+
 client.once("ready", () => {
   console.log("Ready!");
 });
@@ -25,19 +27,19 @@ client.on("message", async message => {
 
   const serverQueue = queue.get(message.guild.id);
 
-  if (message.content.startsWith(`${prefix}play`)) {
+  if (message.content.toLowerCase().startsWith(`${prefix}play`)) {
     execute(message, serverQueue);
     return;
-  } else if (message.content.startsWith(`${prefix}skip`)) {
+  } else if (message.content.toLowerCase().startsWith(`${prefix}skip`)) {
     skip(message, serverQueue);
     return;
-  } else if (message.content.startsWith(`${prefix}stop`)) {
+  } else if (message.content.toLowerCase().startsWith(`${prefix}stop`)) {
     stop(message, serverQueue);
     return;
-  } else if (message.content.startsWith(`${prefix}queue`)) {
+  } else if (message.content.toLowerCase().startsWith(`${prefix}queue`)) {
     checkQueue(message, serverQueue);
     return;
-  } else if (message.content.startsWith(`${prefix}remove`)) {
+  } else if (message.content.toLowerCase().startsWith(`${prefix}remove`)) {
     remove(message, serverQueue);
     return;
   }
@@ -238,10 +240,16 @@ function checkQueue(message, serverQueue) {
 function play(guild, song) {
   const serverQueue = queue.get(guild.id);
   if (!song) {
-    serverQueue.voiceChannel.leave();
-    queue.delete(guild.id);
+
+    timeout = setTimeout(() => {
+      serverQueue.voiceChannel.leave();
+      queue.delete(guild.id);
+    }, 300);
+
     return;
   }
+
+  clearTimeout(timeout);
 
   const dispatcher = serverQueue.connection
     .play(ytdl(song.url, {filter: 'audioonly', quality: 'highestaudio', highWaterMark: 1<<25}, {highWaterMark: 1}))
