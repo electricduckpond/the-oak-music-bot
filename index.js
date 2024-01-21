@@ -2,7 +2,7 @@ const { Client, Events, GatewayIntentBits } = require('discord.js');
 const { prefix, token, youtubeApiKey, maxResults } = require("./config.json");
 const ytdl = require("ytdl-core");
 const axios = require('axios');
-const { joinVoiceChannel,createAudioResource, getVoiceConnection, AudioPlayerStatus,
+const { joinVoiceChannel,createAudioResource, getVoiceConnection, AudioPlayerStatus, VoiceConnectionStatus, entersState,
   createAudioPlayer } = require('@discordjs/voice');
 
 const client = new Client({ intents: [GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.Guilds, GatewayIntentBits.MessageContent] });
@@ -118,7 +118,7 @@ async function execute(message, serverQueue) {
     duration: songInfo?.videoDetails?.lengthSeconds
   };
 
-  if (!serverQueue) {
+  if (!serverQueue || serverQueue?.connection?.state?.status === 'destroyed') {
     const queueContruct = {
       textChannel: message.channel,
       voiceChannel: null,
@@ -205,6 +205,9 @@ function stop(message, serverQueue) {
     return message.channel.send({ content: 
       "You have to be in a voice channel to stop the music!"
     });
+  
+    if(!serverQueue || !serverQueue.connection)
+    return message.channel.send({ content: "There is no song that I could stop!"});
   serverQueue.songs = [];
   serverQueue?.connection?.destroy();
 }
@@ -241,19 +244,10 @@ function checkQueue(message, serverQueue) {
 }
 
 async function play(guild, song) {
+
   const serverQueue = queue.get(guild.id);
 
   console.log(serverQueue);
-  if (!song) {
-
-    timeout = setTimeout(() => {
-
-      serverQueue?.connection?.destroy();
-      queue.delete(guild.id);
-    }, 300);
-
-    return;
-  }
 
   clearTimeout(timeout);
 console.log(song.url);
@@ -272,6 +266,19 @@ console.log(song.url);
   player.on(AudioPlayerStatus.Idle, async () => {
     serverQueue.songs.shift();
     await play(guild, serverQueue.songs[0]);
+  });
+
+  serverQueue.connection.on(VoiceConnectionStatus.Disconnected, async (oldState, newState) => {
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+      ]);
+      // Seems to be reconnecting to a new channel - ignore disconnect
+    } catch (error) {
+      // Seems to be a real disconnect which SHOULDN'T be recovered from
+      serverQueue.connection.destroy();
+    }
   });
 
   serverQueue.textChannel.send({ content: `Start playing: **${song.title}**`});
