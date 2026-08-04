@@ -1,6 +1,9 @@
 const { Client, Events, GatewayIntentBits } = require('discord.js');
 const { prefix, token, youtubeApiKey, maxResults } = require("./config.json");
-const ytdl = require("ytdl-core");
+const ytdl = require("@distube/ytdl-core");
+//const playdl = require('play-dl');
+const fs = require("fs");
+const agent = ytdl.createAgent(JSON.parse(fs.readFileSync("cookies2026.json")));
 const axios = require('axios');
 const { joinVoiceChannel,createAudioResource, getVoiceConnection, AudioPlayerStatus, VoiceConnectionStatus, entersState,
   createAudioPlayer } = require('@discordjs/voice');
@@ -100,8 +103,8 @@ async function execute(message, serverQueue) {
   var songInfo;
 
   try {
-      songInfo = await ytdl.getInfo(`https://www.youtube.com/watch?v=${songUrl}`);
-      console.log(songInfo);
+      songInfo = await ytdl.getInfo(`https://www.youtube.com/watch?v=${songUrl}`, { agent, playerClients: "ANDROID" });
+      //console.log(songInfo);
   }
   catch (e) {
     console.log(e);
@@ -121,7 +124,7 @@ async function execute(message, serverQueue) {
   if (!serverQueue || serverQueue?.connection?.state?.status === 'destroyed') {
     const queueContruct = {
       textChannel: message.channel,
-      voiceChannel: null,
+      voiceChannel: voiceChannel,
       connection: null,
       songs: [],
       volume: 5,
@@ -134,7 +137,7 @@ async function execute(message, serverQueue) {
 
     try {
       queueContruct.connection = connection;
-      await play(message.guild, queueContruct.songs[0]);
+      await play(message.guild, queueContruct.songs[0], queueContruct.voiceChannel);
     } catch (err) {
       console.log(err);
       queue.delete(message.guild.id);
@@ -243,41 +246,53 @@ function checkQueue(message, serverQueue) {
   return message.channel.send({ content: queueString});
 }
 
-async function play(guild, song) {
+async function play(guild, song, voiceChannel) {
 
   const serverQueue = queue.get(guild.id);
 
   console.log(serverQueue);
+  if (!song) {
+
+   timeout = setTimeout(() => {
+
+      serverQueue?.connection?.destroy();
+      queue.delete(guild.id);
+    }, 300);
+
+    return;
+  }
 
   clearTimeout(timeout);
-console.log(song.url);
- const stream = ytdl(song.url, {filter: 'audioonly', quality: 'highestaudio', highWaterMark: 1<<25}, {highWaterMark: 1});
- const player = createAudioPlayer();
- const resource = createAudioResource(stream);
- player.play(resource);
- serverQueue.connection.subscribe(player);
+  console.log(song.url);
+  const stream1 = ytdl(song.url, {filter: 'audioonly', quality: 'highestaudio', highWaterMark: 1<<25}, {highWaterMark: 1});
+  const playerf = createAudioPlayer();
+  const resource = createAudioResource(stream1);
+  playerf.play(resource);
+  serverQueue.connection.subscribe(playerf);
 
-  player.on("error", async (error) => {
+  playerf.on("error", async (error) => {
     serverQueue.songs.shift();
+    //player.stop();  
     await play(guild, serverQueue.songs[0]);
-    console.error(error.toString());      
+    console.error(error.toString());     
   });
 
-  player.on(AudioPlayerStatus.Idle, async () => {
+  playerf.on(AudioPlayerStatus.Idle, async () => {
     serverQueue.songs.shift();
-    await play(guild, serverQueue.songs[0]);
+    playerf.stop();
+    await play(guild, serverQueue.songs[0]);    
   });
 
-  serverQueue.connection.on(VoiceConnectionStatus.Disconnected, async (oldState, newState) => {
+ serverQueue.connection.on(VoiceConnectionStatus.Disconnected, async (oldState, newState) => {
     try {
       await Promise.race([
         entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
         entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
       ]);
-      // Seems to be reconnecting to a new channel - ignore disconnect
+// Seems to be reconnecting to a new channel - ignore disconnect
     } catch (error) {
       // Seems to be a real disconnect which SHOULDN'T be recovered from
-      serverQueue.connection.destroy();
+      serverQueue?.connection?.destroy();
     }
   });
 

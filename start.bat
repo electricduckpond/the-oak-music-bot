@@ -1,2 +1,1 @@
-node index.js
-pause
+node --max-old-space-size=3072 index.js
