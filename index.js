@@ -1,12 +1,163 @@
 const { Client, Events, GatewayIntentBits } = require('discord.js');
 const { prefix, token, youtubeApiKey, maxResults } = require("./config.json");
-const ytdl = require("@distube/ytdl-core");
-//const playdl = require('play-dl');
+const youtubedl = require("youtube-dl-exec"); // wraps the yt-dlp binary, auto-installed on first run
+const path = require("path");
 const fs = require("fs");
-const agent = ytdl.createAgent(JSON.parse(fs.readFileSync("cookies2026.json")));
 const axios = require('axios');
-const { joinVoiceChannel,createAudioResource, getVoiceConnection, AudioPlayerStatus, VoiceConnectionStatus, entersState,
+// @discordjs/voice transcodes the yt-dlp stream via prism-media -> ffmpeg.
+// Point it at the prebuilt binary from ffmpeg-static so it works even if
+// ffmpeg isn't installed system-wide.
+process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || require('ffmpeg-static');
+const { joinVoiceChannel, createAudioResource, getVoiceConnection, AudioPlayerStatus, VoiceConnectionStatus, entersState,
   createAudioPlayer } = require('@discordjs/voice');
+
+// yt-dlp expects cookies in Netscape cookies.txt format, not the JSON format
+// ytdl-core used. Export cookies with a browser extension like "Get cookies.txt
+// LOCALLY" and point this at the resulting file. Leave the file absent/empty and
+// ytdl-core-style JSON cookies will simply be ignored (age-restricted / bot-check
+// videos may then fail).
+const COOKIES_PATH = path.join(__dirname, "cookies.txt");
+const cookiesOption = fs.existsSync(COOKIES_PATH) ? { cookies: COOKIES_PATH } : {};
+
+// yt-dlp needs an external JS runtime to solve YouTube's signature/"n"
+// challenges - without one, most clients can only return thumbnail images,
+// no actual media. Using the Node.js install this bot already runs on.
+// (QuickJS was tried and worked, but the qjs.exe binary got flagged by
+// antivirus - reverted, do not re-add it without confirming it's clean.)
+const jsRuntimeOption = { jsRuntimes: "node" };
+
+const YTDLP_BASE_OPTS = {
+  noCheckCertificate: true,
+  preferFreeFormats: true,
+  ...jsRuntimeOption,
+  ...cookiesOption,
+};
+
+// YouTube keeps A/B-testing which "player client" is allowed to fetch
+// formats, and yt-dlp keeps adapting - no single client stays reliable for
+// long right now, and the SAME client can return a full format list on one
+// request and an empty one moments later. `undefined` first lets yt-dlp use
+// its own built-in multi-client fallback logic (usually the best bet); the
+// rest are extra tries if that still comes back empty for a given video.
+const YTDLP_CLIENT_FALLBACKS = [
+  undefined,
+  "youtube:player_client=android",
+  "youtube:player_client=tv",
+  "youtube:player_client=ios",
+];
+
+function ytdlpOptsFor(clientArg, extra) {
+  const opts = { ...YTDLP_BASE_OPTS, ...extra };
+  if (clientArg) opts.extractorArgs = clientArg;
+  return opts;
+}
+
+async function getSongInfo(url) {
+  let lastErr;
+  for (const clientArg of YTDLP_CLIENT_FALLBACKS) {
+    try {
+      const info = await youtubedl(
+        url,
+        ytdlpOptsFor(clientArg, { dumpSingleJson: true, format: "bestaudio/best" })
+      );
+      return { info, clientArg };
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[yt-dlp] client "${clientArg ?? "default"}" failed for info lookup:`);
+      console.warn(err.stderr || err.message || err);
+    }
+  }
+  throw lastErr;
+}
+
+function spawnYtDlpAudio(url, clientArg) {
+  const subprocess = youtubedl.exec(
+    url,
+    ytdlpOptsFor(clientArg, {
+      output: "-",
+      format: "bestaudio/best",
+    }),
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
+
+  const stderrLines = [];
+  subprocess.stderr?.on("data", (chunk) => {
+    // yt-dlp writes progress AND real errors (403s, bot-check, missing
+    // formats, etc) to stderr - surface them instead of hiding them.
+    const text = chunk.toString().trim();
+    stderrLines.push(text);
+    console.error(`[yt-dlp] ${text}`);
+  });
+  subprocess.once("error", (err) => {
+    // fires if the yt-dlp binary itself couldn't be spawned at all
+    console.error("[yt-dlp] failed to start:", err);
+  });
+  subprocess.stdout.once("error", (err) => {
+    console.error("[yt-dlp] stdout stream error:", err);
+  });
+
+  return { subprocess, stderrLines };
+}
+
+// Formats resolve inconsistently between requests right now (YouTube-side,
+// documented flakiness), so rather than trusting the first spawn, wait to
+// see actual audio bytes arrive before committing to a client. If the
+// process exits first (empty format list, 403, etc), kill it and retry the
+// next client. The peeked chunk is pushed back with unshift() so nothing is
+// lost once playback actually starts consuming the stream.
+function waitForAudioOrFail(subprocess, stderrLines, timeoutMs = 10_000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      subprocess.stdout.removeListener("data", onData);
+      subprocess.removeListener("exit", onExit);
+    };
+    const onData = (chunk) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      subprocess.stdout.pause();
+      subprocess.stdout.unshift(chunk);
+      resolve();
+    };
+    const onExit = (code) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error(`yt-dlp exited (code ${code}) before producing audio: ${stderrLines.join(" ")}`));
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(); // slow start on an otherwise healthy stream - let it play
+    }, timeoutMs);
+
+    subprocess.stdout.once("data", onData);
+    subprocess.once("exit", onExit);
+  });
+}
+
+async function createYtDlpAudioStream(url, preferredClientArg) {
+  const clientsToTry = [preferredClientArg, ...YTDLP_CLIENT_FALLBACKS].filter(
+    (client, index, arr) => arr.indexOf(client) === index
+  );
+
+  let lastErr;
+  for (const clientArg of clientsToTry) {
+    const { subprocess, stderrLines } = spawnYtDlpAudio(url, clientArg);
+    try {
+      await waitForAudioOrFail(subprocess, stderrLines);
+      return { stream: subprocess.stdout, process: subprocess };
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[yt-dlp] client "${clientArg ?? "default"}" failed to produce audio, trying next client...`);
+      if (!subprocess.killed) subprocess.kill();
+    }
+  }
+  throw lastErr;
+}
 
 const client = new Client({ intents: [GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.Guilds, GatewayIntentBits.MessageContent] });
 
@@ -100,10 +251,20 @@ async function execute(message, serverQueue) {
     adapterCreator: voiceChannel.guild.voiceAdapterCreator,
   });
 
-  var songInfo;
+  connection.on("stateChange", (oldState, newState) => {
+    console.log(`[voice connection] ${oldState.status} -> ${newState.status}`);
+  });
+  connection.on("debug", (message) => {
+    console.log(`[voice debug] ${message}`);
+  });
+  connection.on("error", (err) => {
+    console.error("[voice connection] error:", err);
+  });
+
+  var songInfo, workingClientArg;
 
   try {
-      songInfo = await ytdl.getInfo(`https://www.youtube.com/watch?v=${songUrl}`, { agent, playerClients: "ANDROID" });
+      ({ info: songInfo, clientArg: workingClientArg } = await getSongInfo(`https://www.youtube.com/watch?v=${songUrl}`));
       //console.log(songInfo);
   }
   catch (e) {
@@ -111,14 +272,15 @@ async function execute(message, serverQueue) {
     return message.channel.send({ content: e.toString()});
   }
 
-  if (!songInfo?.videoDetails) {
+  if (!songInfo?.title) {
     return message.channel.send({ content: "Faild to fetch song"});
   }
   
   const song = {
-    title: songInfo?.videoDetails?.title,
-    url: songInfo?.videoDetails?.video_url,
-    duration: songInfo?.videoDetails?.lengthSeconds
+    title: songInfo?.title,
+    url: songInfo?.webpage_url ?? `https://www.youtube.com/watch?v=${songUrl}`,
+    duration: songInfo?.duration,
+    clientArg: workingClientArg
   };
 
   if (!serverQueue || serverQueue?.connection?.state?.status === 'destroyed') {
@@ -264,13 +426,41 @@ async function play(guild, song, voiceChannel) {
 
   clearTimeout(timeout);
   console.log(song.url);
-  const stream1 = ytdl(song.url, {filter: 'audioonly', quality: 'highestaudio', highWaterMark: 1<<25}, {highWaterMark: 1});
+
+  try {
+    await entersState(serverQueue.connection, VoiceConnectionStatus.Ready, 15_000);
+  } catch (err) {
+    console.error("Voice connection never became Ready:", err);
+    serverQueue.textChannel.send({ content: "Couldn't establish a stable voice connection." });
+    return;
+  }
+
+  let stream1, ytdlpProcess;
+  try {
+    ({ stream: stream1, process: ytdlpProcess } = await createYtDlpAudioStream(song.url, song.clientArg));
+  } catch (err) {
+    console.error("[yt-dlp] all clients failed to produce audio:", err);
+    serverQueue.textChannel.send({ content: `Couldn't get an audio stream for **${song.title}**, skipping.` });
+    serverQueue.songs.shift();
+    return play(guild, serverQueue.songs[0]);
+  }
+
   const playerf = createAudioPlayer();
   const resource = createAudioResource(stream1);
+
+  playerf.on("stateChange", (oldState, newState) => {
+    console.log(`[player] ${oldState.status} -> ${newState.status}`);
+  });
+
   playerf.play(resource);
   serverQueue.connection.subscribe(playerf);
 
+  const killYtDlp = () => {
+    if (!ytdlpProcess.killed) ytdlpProcess.kill();
+  };
+
   playerf.on("error", async (error) => {
+    killYtDlp();
     serverQueue.songs.shift();
     //player.stop();  
     await play(guild, serverQueue.songs[0]);
@@ -278,6 +468,7 @@ async function play(guild, song, voiceChannel) {
   });
 
   playerf.on(AudioPlayerStatus.Idle, async () => {
+    killYtDlp();
     serverQueue.songs.shift();
     playerf.stop();
     await play(guild, serverQueue.songs[0]);    

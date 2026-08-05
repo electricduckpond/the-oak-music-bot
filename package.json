@@ -7,15 +7,15 @@
     "@discord-player/extractor": "7.1.0",
     "@discordjs/opus": "github:discordjs/opus",
     "@discordjs/voice": "0.18.0",
-    "@distube/ytdl-core": "github:ToddyTheNoobDud/ytdl-core-stuff",
     "axios": "0.21.4",
     "discord-player": "7.1.0",
     "discord.js": "14.18.0",
     "discordjs-logger": "2.0.0",
-    "ffmpeg": "0.0.4",
+    "ffmpeg-static": "^5.2.0",
     "fluent-ffmpeg": "2.1.2",
     "libsodium-wrappers": "0.7.11",
-    "play-dl": "1.9.7"
+    "play-dl": "1.9.7",
+    "youtube-dl-exec": "^3.0.0"
   },
   "scripts": {
     "bot": "node index.js",
