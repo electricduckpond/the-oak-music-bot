@@ -5,7 +5,7 @@
   "main": "index.js",
   "dependencies": {
     "@discord-player/extractor": "7.1.0",
-    "@discordjs/opus": "github:discordjs/opus",
+    "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.19.2",
     "@snazzah/davey": "^0.1.10",
     "axios": "0.21.4",
