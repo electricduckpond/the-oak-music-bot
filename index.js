@@ -1,29 +1,17 @@
 const { Client, Events, GatewayIntentBits } = require('discord.js');
 const { prefix, token, youtubeApiKey, maxResults } = require("./config.json");
-const youtubedl = require("youtube-dl-exec"); // wraps the yt-dlp binary, auto-installed on first run
+const youtubedl = require("youtube-dl-exec");
 const path = require("path");
 const fs = require("fs");
 const axios = require('axios');
-// @discordjs/voice transcodes the yt-dlp stream via prism-media -> ffmpeg.
-// Point it at the prebuilt binary from ffmpeg-static so it works even if
-// ffmpeg isn't installed system-wide.
+
 process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || require('ffmpeg-static');
 const { joinVoiceChannel, createAudioResource, getVoiceConnection, AudioPlayerStatus, VoiceConnectionStatus, entersState,
   createAudioPlayer } = require('@discordjs/voice');
 
-// yt-dlp expects cookies in Netscape cookies.txt format, not the JSON format
-// ytdl-core used. Export cookies with a browser extension like "Get cookies.txt
-// LOCALLY" and point this at the resulting file. Leave the file absent/empty and
-// ytdl-core-style JSON cookies will simply be ignored (age-restricted / bot-check
-// videos may then fail).
 const COOKIES_PATH = path.join(__dirname, "cookies.txt");
 const cookiesOption = fs.existsSync(COOKIES_PATH) ? { cookies: COOKIES_PATH } : {};
 
-// yt-dlp needs an external JS runtime to solve YouTube's signature/"n"
-// challenges - without one, most clients can only return thumbnail images,
-// no actual media. Using the Node.js install this bot already runs on.
-// (QuickJS was tried and worked, but the qjs.exe binary got flagged by
-// antivirus - reverted, do not re-add it without confirming it's clean.)
 const jsRuntimeOption = { jsRuntimes: "node" };
 
 const YTDLP_BASE_OPTS = {
@@ -33,12 +21,6 @@ const YTDLP_BASE_OPTS = {
   ...cookiesOption,
 };
 
-// YouTube keeps A/B-testing which "player client" is allowed to fetch
-// formats, and yt-dlp keeps adapting - no single client stays reliable for
-// long right now, and the SAME client can return a full format list on one
-// request and an empty one moments later. `undefined` first lets yt-dlp use
-// its own built-in multi-client fallback logic (usually the best bet); the
-// rest are extra tries if that still comes back empty for a given video.
 const YTDLP_CLIENT_FALLBACKS = [
   undefined,
   "youtube:player_client=android",
@@ -82,8 +64,6 @@ function spawnYtDlpAudio(url, clientArg) {
 
   const stderrLines = [];
   subprocess.stderr?.on("data", (chunk) => {
-    // yt-dlp writes progress AND real errors (403s, bot-check, missing
-    // formats, etc) to stderr - surface them instead of hiding them.
     const text = chunk.toString().trim();
     stderrLines.push(text);
     console.error(`[yt-dlp] ${text}`);
@@ -99,12 +79,6 @@ function spawnYtDlpAudio(url, clientArg) {
   return { subprocess, stderrLines };
 }
 
-// Formats resolve inconsistently between requests right now (YouTube-side,
-// documented flakiness), so rather than trusting the first spawn, wait to
-// see actual audio bytes arrive before committing to a client. If the
-// process exits first (empty format list, 403, etc), kill it and retry the
-// next client. The peeked chunk is pushed back with unshift() so nothing is
-// lost once playback actually starts consuming the stream.
 function waitForAudioOrFail(subprocess, stderrLines, timeoutMs = 10_000) {
   return new Promise((resolve, reject) => {
     let settled = false;
