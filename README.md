@@ -200,8 +200,19 @@ docker run -d --name oak-bot oak-music-bot
 | ``!queue`` | Shows the current queue |
 | ``!pause`` | Pauses playback |
 | ``!resume`` | Resumes playback |
+| ``!remove <index>`` | Removes a song from the queue by its position |
 
 (Prefix is configurable in config.json.)
+
+## Project Layout
+```
+the-oak-music-bot/
+ ├── index.js    ← Discord client setup + command routing
+ ├── queue.js    ← per-guild queue, playback, pause/skip/stop logic
+ ├── ytdlp.js    ← yt-dlp process management and client-fallback logic
+ ├── config.json
+ ├── cookies.txt ← optional
+```
 
 ## Troubleshooting
 
