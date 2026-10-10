@@ -7,27 +7,12 @@ const {
   VoiceConnectionStatus,
 } = require("@discordjs/voice");
 const { createYtDlpAudioStream } = require("./ytdlp");
+const { secondsToTime, totalQueueTime } = require("./utils");
 
 const IDLE_DISCONNECT_MS = 5 * 60 * 1000; // leave the channel after 5 idle minutes
 
 // guildId -> { textChannel, voiceChannel, connection, songs, player, ytdlpProcess, idleTimeout }
 const queue = new Map();
-
-function secondsToTime(rawSeconds) {
-  const seconds = Number(rawSeconds);
-  if (!Number.isFinite(seconds) || seconds < 0) return "00:00:00";
-
-  const h = Math.floor(seconds / 3600).toString().padStart(2, "0");
-  const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, "0");
-  const s = Math.floor(seconds % 60).toString().padStart(2, "0");
-
-  return `${h}:${m}:${s}`;
-}
-
-function totalQueueTime(songs) {
-  const total = songs.reduce((sum, song) => sum + (parseInt(song.duration, 10) || 0), 0);
-  return secondsToTime(total);
-}
 
 function clearIdleTimeout(serverQueue) {
   if (serverQueue?.idleTimeout) {
@@ -130,7 +115,14 @@ async function enqueue(message, song) {
   const existingQueue = queue.get(guildId);
 
   if (existingQueue && existingQueue.connection?.state?.status !== "destroyed") {
+    const nothingPlaying = existingQueue.songs.length === 0;
     existingQueue.songs.push(song);
+
+    if (nothingPlaying) {
+      existingQueue.textChannel = message.channel;
+      return play(message.guild, song);
+    }
+
     return message.channel.send({ content: `${song.title} has been added to the queue!` });
   }
 

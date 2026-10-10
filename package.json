@@ -11,11 +11,13 @@
     "discord.js": "14.18.0",
     "ffmpeg-static": "^5.2.0",
     "libsodium-wrappers": "0.7.11",
-    "youtube-dl-exec": "^3.0.0"
+    "youtube-dl-exec": "^3.1.17"
   },
   "scripts": {
     "bot": "node index.js",
-    "test": "jest"
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
   },
   "repository": {
     "type": "git",
@@ -31,6 +33,16 @@
   "license": "ISC",
   "devDependencies": {
     "jest": "^27.5.1"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/__tests__/**/*.test.js"
+    ],
+    "collectCoverageFrom": [
+      "*.js",
+      "!index.js"
+    ]
   },
   "allowScripts": {
     "ffmpeg-static@5.3.0": true,

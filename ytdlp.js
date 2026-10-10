@@ -28,6 +28,14 @@ function ytdlpOptsFor(clientArg, extra) {
   return opts;
 }
 
+// Puts the preferred client first (if any), then the rest of the fallback
+// list, with duplicates removed.
+function resolveClientOrder(preferredClientArg) {
+  return [preferredClientArg, ...YTDLP_CLIENT_FALLBACKS].filter(
+    (client, index, arr) => arr.indexOf(client) === index
+  );
+}
+
 async function getSongInfo(url) {
   let lastErr;
   for (const clientArg of YTDLP_CLIENT_FALLBACKS) {
@@ -108,9 +116,7 @@ function waitForAudioOrFail(subprocess, stderrLines, timeoutMs = 10_000) {
 }
 
 async function createYtDlpAudioStream(url, preferredClientArg) {
-  const clientsToTry = [preferredClientArg, ...YTDLP_CLIENT_FALLBACKS].filter(
-    (client, index, arr) => arr.indexOf(client) === index
-  );
+  const clientsToTry = resolveClientOrder(preferredClientArg);
 
   let lastErr;
   for (const clientArg of clientsToTry) {
@@ -127,4 +133,10 @@ async function createYtDlpAudioStream(url, preferredClientArg) {
   throw lastErr;
 }
 
-module.exports = { getSongInfo, createYtDlpAudioStream };
+module.exports = {
+  getSongInfo,
+  createYtDlpAudioStream,
+  ytdlpOptsFor,
+  resolveClientOrder,
+  YTDLP_CLIENT_FALLBACKS,
+};

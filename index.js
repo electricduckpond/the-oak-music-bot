@@ -1,10 +1,10 @@
 const { Client, Events, GatewayIntentBits } = require("discord.js");
 const { prefix, token, youtubeApiKey, maxResults } = require("./config.json");
-const axios = require("axios");
 
 process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || require("ffmpeg-static");
 
 const { getSongInfo } = require("./ytdlp");
+const { search } = require("./search");
 const { enqueue, skip, stop, pause, resume, remove, checkQueue, getAllQueues } = require("./queue");
 
 const client = new Client({
@@ -55,36 +55,13 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-async function search(args) {
-  const firstArg = args[0];
-
-  if (firstArg?.startsWith("https://www.youtube.com/watch?v=")) {
-    return firstArg.replace("https://www.youtube.com/watch?v=", "").split("&")[0];
-  }
-  if (firstArg?.startsWith("https://youtu.be/")) {
-    return firstArg.replace("https://youtu.be/", "").split("?")[0];
-  }
-
-  const searchStringUrlEncoded = encodeURIComponent(args.join(" "));
-
-  try {
-    const response = await axios.get(
-      `https://youtube.googleapis.com/youtube/v3/search?key=${youtubeApiKey}&part=snippet&type=video&maxResults=${maxResults}&q=${searchStringUrlEncoded}`
-    );
-    return response?.data?.items?.[0]?.id?.videoId;
-  } catch (error) {
-    console.error(error);
-    return null;
-  }
-}
-
 async function execute(message, args) {
   const voiceChannel = message.member.voice.channel;
   if (!voiceChannel) {
     return message.channel.send({ content: "You need to be in a voice channel to play music!" });
   }
 
-  const songId = await search(args);
+  const songId = await search(args, { youtubeApiKey, maxResults });
   if (!songId) {
     return message.channel.send({ content: "Could not find the song" });
   }
