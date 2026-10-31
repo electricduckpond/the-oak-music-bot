@@ -42,6 +42,25 @@ describe("totalQueueTime", () => {
 });
 
 describe("extractVideoId", () => {
+  test.each([
+    "https://youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://music.youtube.com/watch?v=dQw4w9WgXcQ&si=abc",
+    "https://www.youtube.com/watch?list=PL123&v=dQw4w9WgXcQ",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share",
+    "http://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  ])("extracts the id from %s", (url) => {
+    expect(extractVideoId([url])).toBe("dQw4w9WgXcQ");
+  });
+
+  test.each([
+    "https://www.youtube.com/playlist?list=PL123",
+    "https://www.youtube.com/watch?v=bad%20id",
+    "https://notyoutube.com/watch?v=dQw4w9WgXcQ",
+  ])("returns null for %s", (url) => {
+    expect(extractVideoId([url])).toBeNull();
+  });
+
   test("extracts the id from a standard watch URL", () => {
     expect(extractVideoId(["https://www.youtube.com/watch?v=dQw4w9WgXcQ"])).toBe("dQw4w9WgXcQ");
   });

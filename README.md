@@ -1,6 +1,6 @@
 # The Oak Music Bot
 
-A Discord music bot built with Discord.js, Discord Player, yt‑dlp, and ffmpeg.  
+A Discord music bot built with Discord.js, yt‑dlp, and ffmpeg.  
 Supports YouTube playback, search, queueing, and high‑quality audio streaming.
 
 ---
@@ -63,7 +63,10 @@ To run the bot, you need a **Discord Bot Token**. This token allows your bot to 
 > Never share your bot token.  
 > Anyone with this token can control your bot.
 
-### 4. Invite the Bot to Your Server
+### 4. Enable the Message Content Intent
+Still on the **Bot** tab, under **Privileged Gateway Intents**, turn on **Message Content Intent** and save. The bot can't log in without it.
+
+### 5. Invite the Bot to Your Server
 1. Go to the **OAuth2 → URL Generator** tab  
 2. Under **Scopes**, select:
    - `bot`
@@ -71,6 +74,7 @@ To run the bot, you need a **Discord Bot Token**. This token allows your bot to 
    - `Connect`
    - `Speak`
    - `Read Messages/View Channels`
+   - `Send Messages`
 4. Copy the generated URL and open it in your browser
 5. Choose your server and click **Authorize**
 
@@ -109,7 +113,7 @@ To prevent abuse:
 
 ---
 
-Place both keys in your `config.json`:
+Copy `config.example.json` to `config.json` and fill in both keys. `config.json` is ignored by git, so never force-add it:
 
 ```json
 {
@@ -170,9 +174,11 @@ npm install
 If you changed Node versions:
 
 ```bash
-rm -rf node_modules package-lock.json
+rm -rf node_modules
 npm install
 ```
+
+`@discordjs/opus` has no prebuilt binary for Node 24, so it compiles during install. On Windows that needs Visual Studio with the "Desktop development with C++" workload, and an up-to-date npm if you use Visual Studio 2026 (`npm install -g npm@latest`).
 
 ## Running the Bot (Local)
 ```bash
@@ -188,8 +194,13 @@ docker build -t oak-music-bot .
 
 Then run:
 
+`config.json` and `cookies.txt` are left out of the image, so mount them when you run it (drop the cookies line if you don't use one):
+
 ```bash
-docker run -d --name oak-bot oak-music-bot
+docker run -d --name oak-bot \
+  -v "$(pwd)/config.json:/usr/src/app/config.json:ro" \
+  -v "$(pwd)/cookies.txt:/usr/src/app/cookies.txt:ro" \
+  oak-music-bot
 ```
 ## Commands
 | Command | Description |

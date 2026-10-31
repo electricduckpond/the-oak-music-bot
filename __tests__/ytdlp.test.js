@@ -16,6 +16,7 @@ const {
 function makeFakeSubprocess() {
   const { EventEmitter } = require("events");
   const subprocess = new EventEmitter();
+  subprocess.catch = jest.fn(); // the real one is also a promise
   subprocess.stdout = new EventEmitter();
   subprocess.stdout.pause = jest.fn();
   subprocess.stdout.unshift = jest.fn();
@@ -33,13 +34,16 @@ describe("ytdlpOptsFor", () => {
   test("merges base opts with the extra opts passed in", () => {
     const opts = ytdlpOptsFor(undefined, { format: "bestaudio/best" });
     expect(opts).toMatchObject({
-      noCheckCertificate: true,
       preferFreeFormats: true,
       noPlaylist: true,
       jsRuntimes: "node",
       format: "bestaudio/best",
     });
     expect(opts.extractorArgs).toBeUndefined();
+  });
+
+  test("leaves certificate checks on", () => {
+    expect(ytdlpOptsFor(undefined, {}).noCheckCertificate).toBeUndefined();
   });
 
   test("sets extractorArgs when a client is given", () => {
@@ -109,6 +113,17 @@ describe("createYtDlpAudioStream", () => {
     expect(result.stream).toBe(subprocess.stdout);
     expect(result.process).toBe(subprocess);
     expect(youtubedl.exec).toHaveBeenCalledTimes(1);
+  });
+
+  test("handles the promise exec() returns, so killing yt-dlp can't crash the bot", async () => {
+    const subprocess = makeFakeSubprocess();
+    youtubedl.exec.mockReturnValue(subprocess);
+
+    const streamPromise = createYtDlpAudioStream("https://example.com/watch", undefined);
+    subprocess.stdout.emit("data", Buffer.from("audio-bytes"));
+    await streamPromise;
+
+    expect(subprocess.catch).toHaveBeenCalled();
   });
 
   test("tries the next client if one exits before producing audio", async () => {

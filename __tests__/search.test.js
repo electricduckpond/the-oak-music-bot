@@ -23,15 +23,21 @@ test("falls back to the YouTube Data API for a text query", async () => {
   const id = await search(["never", "gonna", "give", "you", "up"], config);
 
   expect(id).toBe("abc123");
-  expect(axios.get).toHaveBeenCalledWith(expect.stringContaining("q=never%20gonna%20give%20you%20up"));
-  expect(axios.get).toHaveBeenCalledWith(expect.stringContaining("key=test-key"));
-  expect(axios.get).toHaveBeenCalledWith(expect.stringContaining("maxResults=5"));
+  expect(axios.get).toHaveBeenCalledWith(
+    expect.any(String),
+    { params: expect.objectContaining({ q: "never gonna give you up", key: "test-key", maxResults: 5 }) }
+  );
 });
 
-test("returns null when the API call fails", async () => {
-  axios.get.mockRejectedValue(new Error("network error"));
+test("returns null when the API call fails, without logging the API key", async () => {
+  const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+  axios.get.mockRejectedValue(Object.assign(new Error("network error"), { config: { params: { key: "test-key" } } }));
+
   const id = await search(["some", "query"], config);
+
   expect(id).toBeNull();
+  expect(JSON.stringify(consoleError.mock.calls)).not.toContain("test-key");
+  consoleError.mockRestore();
 });
 
 test("returns null when the API returns no results", async () => {

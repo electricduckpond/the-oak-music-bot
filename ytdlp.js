@@ -8,12 +8,13 @@ const cookiesOption = fs.existsSync(COOKIES_PATH) ? { cookies: COOKIES_PATH } : 
 const jsRuntimeOption = { jsRuntimes: "node" };
 
 const YTDLP_BASE_OPTS = {
-  noCheckCertificate: true,
   preferFreeFormats: true,
   noPlaylist: true, // don't dump/stream an entire playlist if a playlist URL slips through
   ...jsRuntimeOption,
   ...cookiesOption,
 };
+
+const INFO_TIMEOUT_MS = 30_000; // per client, so a hung yt-dlp can't stall !play forever
 
 const YTDLP_CLIENT_FALLBACKS = [
   undefined,
@@ -42,7 +43,8 @@ async function getSongInfo(url) {
     try {
       const info = await youtubedl(
         url,
-        ytdlpOptsFor(clientArg, { dumpSingleJson: true, format: "bestaudio/best" })
+        ytdlpOptsFor(clientArg, { dumpSingleJson: true, format: "bestaudio/best" }),
+        { timeout: INFO_TIMEOUT_MS }
       );
       return { info, clientArg };
     } catch (err) {
@@ -63,6 +65,11 @@ function spawnYtDlpAudio(url, clientArg) {
     }),
     { stdio: ["ignore", "pipe", "pipe"] }
   );
+
+  // exec() returns a promise that rejects on any non-zero exit, including when we
+  // kill it. Failures are handled through the events below, and without this
+  // catch the rejection would take the whole process down.
+  subprocess.catch(() => {});
 
   const stderrLines = [];
   subprocess.stderr?.on("data", (chunk) => {
@@ -127,7 +134,7 @@ async function createYtDlpAudioStream(url, preferredClientArg) {
     } catch (err) {
       lastErr = err;
       console.warn(`[yt-dlp] client "${clientArg ?? "default"}" failed to produce audio, trying next client...`);
-      if (!subprocess.killed) subprocess.kill();
+      subprocess.kill();
     }
   }
   throw lastErr;

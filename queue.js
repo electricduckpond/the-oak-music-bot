@@ -10,6 +10,7 @@ const { createYtDlpAudioStream } = require("./ytdlp");
 const { secondsToTime, totalQueueTime } = require("./utils");
 
 const IDLE_DISCONNECT_MS = 5 * 60 * 1000; // leave the channel after 5 idle minutes
+const MAX_MESSAGE_LENGTH = 2000; // Discord rejects anything longer
 
 // guildId -> { textChannel, voiceChannel, connection, songs, player, ytdlpProcess, idleTimeout }
 const queue = new Map();
@@ -26,9 +27,35 @@ function clearIdleTimeout(serverQueue) {
 function scheduleIdleDisconnect(guildId, serverQueue) {
   clearIdleTimeout(serverQueue);
   serverQueue.idleTimeout = setTimeout(() => {
-    serverQueue?.connection?.destroy();
-    queue.delete(guildId);
+    destroyQueue(guildId, serverQueue);
   }, IDLE_DISCONNECT_MS);
+}
+
+// Clears the current player first, so its Idle handler knows it's been replaced
+// and doesn't advance the queue a second time.
+function stopPlayback(serverQueue) {
+  const { player, ytdlpProcess } = serverQueue;
+  serverQueue.player = null;
+  serverQueue.ytdlpProcess = null;
+  ytdlpProcess?.kill();
+  player?.stop(true);
+}
+
+// Safe to call more than once: destroy() throws on an already destroyed
+// connection, and a stale caller mustn't remove a newer queue for the guild.
+function destroyQueue(guildId, serverQueue) {
+  clearIdleTimeout(serverQueue);
+  stopPlayback(serverQueue);
+  serverQueue.songs = [];
+  if (serverQueue.connection?.state?.status !== VoiceConnectionStatus.Destroyed) {
+    serverQueue.connection?.destroy();
+  }
+  if (queue.get(guildId) === serverQueue) queue.delete(guildId);
+}
+
+// False once a skip or stop has happened during one of play()'s awaits.
+function isCurrentSong(guildId, serverQueue, song) {
+  return queue.get(guildId) === serverQueue && serverQueue.songs[0] === song;
 }
 
 async function play(guild, song) {
@@ -46,18 +73,26 @@ async function play(guild, song) {
     await entersState(serverQueue.connection, VoiceConnectionStatus.Ready, 15_000);
   } catch (err) {
     console.error("Voice connection never became Ready:", err);
+    if (queue.get(guild.id) !== serverQueue) return;
     serverQueue.textChannel.send({ content: "Couldn't establish a stable voice connection." });
+    destroyQueue(guild.id, serverQueue);
     return;
   }
+  if (!isCurrentSong(guild.id, serverQueue, song)) return;
 
   let stream, ytdlpProcess;
   try {
     ({ stream, process: ytdlpProcess } = await createYtDlpAudioStream(song.url, song.clientArg));
   } catch (err) {
     console.error("[yt-dlp] all clients failed to produce audio:", err);
+    if (!isCurrentSong(guild.id, serverQueue, song)) return;
     serverQueue.textChannel.send({ content: `Couldn't get an audio stream for **${song.title}**, skipping.` });
     serverQueue.songs.shift();
     return play(guild, serverQueue.songs[0]);
+  }
+  if (!isCurrentSong(guild.id, serverQueue, song)) {
+    ytdlpProcess.kill();
+    return;
   }
 
   const player = createAudioPlayer();
@@ -73,37 +108,16 @@ async function play(guild, song) {
   player.play(resource);
   serverQueue.connection.subscribe(player);
 
-  const killYtDlp = () => {
-    if (ytdlpProcess && !ytdlpProcess.killed) ytdlpProcess.kill();
-  };
-
-  player.on("error", async (error) => {
+  // The player always goes Idle after an error, so only the Idle handler advances.
+  player.on("error", (error) => {
     console.error(error.toString());
-    killYtDlp();
-    serverQueue.songs.shift();
-    await play(guild, serverQueue.songs[0]);
   });
 
   player.on(AudioPlayerStatus.Idle, async () => {
-    killYtDlp();
+    if (serverQueue.player !== player) return;
+    stopPlayback(serverQueue);
     serverQueue.songs.shift();
-    player.stop();
     await play(guild, serverQueue.songs[0]);
-  });
-
-  serverQueue.connection.on(VoiceConnectionStatus.Disconnected, async () => {
-    try {
-      await Promise.race([
-        entersState(serverQueue.connection, VoiceConnectionStatus.Signalling, 5_000),
-        entersState(serverQueue.connection, VoiceConnectionStatus.Connecting, 5_000),
-      ]);
-      // Seems to be reconnecting to a new channel - ignore disconnect
-    } catch {
-      // Real disconnect which shouldn't be recovered from
-      killYtDlp();
-      serverQueue?.connection?.destroy();
-      queue.delete(guild.id);
-    }
   });
 
   serverQueue.textChannel.send({ content: `Start playing: **${song.title}**` });
@@ -149,15 +163,27 @@ async function enqueue(message, song) {
     idleTimeout: null,
   };
 
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+      ]);
+      // Seems to be reconnecting to a new channel - ignore disconnect
+    } catch {
+      // Real disconnect which shouldn't be recovered from
+      destroyQueue(guildId, serverQueue);
+    }
+  });
+
   queue.set(guildId, serverQueue);
 
   try {
     await play(message.guild, serverQueue.songs[0]);
   } catch (err) {
     console.error(err);
-    queue.delete(guildId);
-    connection.destroy();
-    return message.channel.send({ content: err.toString() });
+    destroyQueue(guildId, serverQueue);
+    return message.channel.send({ content: "Something went wrong starting playback." });
   }
 }
 
@@ -166,9 +192,10 @@ async function skip(message) {
   if (!message.member.voice.channel) {
     return message.channel.send({ content: "You have to be in a voice channel to skip the music!" });
   }
-  if (!serverQueue) {
+  if (!serverQueue?.songs.length) {
     return message.channel.send({ content: "There is no song that I could skip!" });
   }
+  stopPlayback(serverQueue);
   serverQueue.songs.shift();
   await play(message.guild, serverQueue.songs[0]);
 }
@@ -181,11 +208,7 @@ function stop(message) {
   if (!serverQueue || !serverQueue.connection) {
     return message.channel.send({ content: "There is no song that I could stop!" });
   }
-  serverQueue.songs = [];
-  clearIdleTimeout(serverQueue);
-  if (serverQueue.ytdlpProcess && !serverQueue.ytdlpProcess.killed) serverQueue.ytdlpProcess.kill();
-  serverQueue.connection.destroy();
-  queue.delete(message.guildId);
+  destroyQueue(message.guildId, serverQueue);
 }
 
 function pause(message) {
@@ -236,9 +259,14 @@ function checkQueue(message) {
   }
 
   let queueString = `Total Time: (${totalQueueTime(serverQueue.songs)}) \nCurrent Queue:\n`;
-  serverQueue.songs.forEach((song, index) => {
-    queueString += `${index + 1}.  ${song.title}  --  (${secondsToTime(song.duration)})\n`;
-  });
+  for (const [index, song] of serverQueue.songs.entries()) {
+    const line = `${index + 1}.  ${song.title}  --  (${secondsToTime(song.duration)})\n`;
+    if (queueString.length + line.length > MAX_MESSAGE_LENGTH - 30) { // leaves room for the "more" line
+      queueString += `...and ${serverQueue.songs.length - index} more\n`;
+      break;
+    }
+    queueString += line;
+  }
 
   return message.channel.send({ content: queueString });
 }
@@ -247,4 +275,10 @@ function getAllQueues() {
   return queue;
 }
 
-module.exports = { enqueue, skip, stop, pause, resume, remove, checkQueue, getAllQueues };
+function destroyAllQueues() {
+  for (const [guildId, serverQueue] of queue) {
+    destroyQueue(guildId, serverQueue);
+  }
+}
+
+module.exports = { enqueue, skip, stop, pause, resume, remove, checkQueue, getAllQueues, destroyAllQueues };

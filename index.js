@@ -5,7 +5,7 @@ process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || require("ffmpeg-static");
 
 const { getSongInfo } = require("./ytdlp");
 const { search } = require("./search");
-const { enqueue, skip, stop, pause, resume, remove, checkQueue, getAllQueues } = require("./queue");
+const { enqueue, skip, stop, pause, resume, remove, checkQueue, destroyAllQueues } = require("./queue");
 
 const client = new Client({
   intents: [
@@ -14,6 +14,16 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.MessageContent,
   ],
+  allowedMentions: { parse: [] }, // video titles are untrusted, don't let them ping anyone
+});
+
+client.on(Events.Error, (err) => {
+  console.error("[client] error:", err);
+});
+
+// A failed send (missing permissions, say) shouldn't take the bot down for every server.
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled rejection:", err);
 });
 
 client.once(Events.ClientReady, () => {
@@ -61,6 +71,10 @@ async function execute(message, args) {
     return message.channel.send({ content: "You need to be in a voice channel to play music!" });
   }
 
+  if (!args.length) {
+    return message.channel.send({ content: `Usage: ${prefix}play <song name or YouTube link>` });
+  }
+
   const songId = await search(args, { youtubeApiKey, maxResults });
   if (!songId) {
     return message.channel.send({ content: "Could not find the song" });
@@ -73,7 +87,8 @@ async function execute(message, args) {
     ));
   } catch (e) {
     console.error(e);
-    return message.channel.send({ content: e.toString() });
+    // the full error is too long for Discord and contains local paths
+    return message.channel.send({ content: "Couldn't load that song." });
   }
 
   if (!songInfo?.title) {
@@ -92,12 +107,7 @@ async function execute(message, args) {
 
 function shutdown() {
   console.log("Shutting down, cleaning up voice connections and yt-dlp processes...");
-  for (const serverQueue of getAllQueues().values()) {
-    if (serverQueue.ytdlpProcess && !serverQueue.ytdlpProcess.killed) {
-      serverQueue.ytdlpProcess.kill();
-    }
-    serverQueue.connection?.destroy();
-  }
+  destroyAllQueues();
   client.destroy();
   process.exit(0);
 }

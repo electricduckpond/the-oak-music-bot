@@ -1,10 +1,13 @@
 jest.mock("@discordjs/voice", () => ({
   joinVoiceChannel: jest.fn(),
   createAudioResource: jest.fn(),
-  createAudioPlayer: jest.fn(() => ({
-    on: jest.fn(),
-    play: jest.fn(),
-  })),
+  createAudioPlayer: jest.fn(() => {
+    const { EventEmitter } = require("events");
+    const player = new EventEmitter();
+    player.play = jest.fn();
+    player.stop = jest.fn();
+    return player;
+  }),
   entersState: jest.fn(),
   AudioPlayerStatus: { Idle: "idle" },
   VoiceConnectionStatus: {
@@ -12,6 +15,7 @@ jest.mock("@discordjs/voice", () => ({
     Disconnected: "disconnected",
     Signalling: "signalling",
     Connecting: "connecting",
+    Destroyed: "destroyed",
   },
 }));
 
@@ -19,7 +23,8 @@ jest.mock("../ytdlp", () => ({
   createYtDlpAudioStream: jest.fn(),
 }));
 
-const { joinVoiceChannel, entersState } = require("@discordjs/voice");
+const { joinVoiceChannel, entersState, createAudioPlayer } = require("@discordjs/voice");
+const { createYtDlpAudioStream } = require("../ytdlp");
 const { enqueue, skip, stop, pause, resume, remove, checkQueue, getAllQueues } = require("../queue");
 
 function makeMessage({ guildId = "guild-1", inVoice = true } = {}) {
@@ -40,6 +45,154 @@ function makeMessage({ guildId = "guild-1", inVoice = true } = {}) {
 beforeEach(() => {
   getAllQueues().clear();
   jest.clearAllMocks();
+  jest.spyOn(console, "log").mockImplementation(() => {});
+  jest.spyOn(console, "error").mockImplementation(() => {});
+});
+
+afterEach(() => {
+  for (const serverQueue of getAllQueues().values()) clearTimeout(serverQueue.idleTimeout);
+  jest.restoreAllMocks();
+});
+
+// A real-ish connection: destroy() throws the second time, like the library does.
+function makeConnection() {
+  const { EventEmitter } = require("events");
+  const connection = new EventEmitter();
+  connection.state = { status: "ready" };
+  connection.subscribe = jest.fn();
+  connection.destroy = jest.fn(() => {
+    if (connection.state.status === "destroyed") throw new Error("already destroyed");
+    connection.state = { status: "destroyed" };
+  });
+  return connection;
+}
+
+const makeProcess = () => ({ kill: jest.fn() });
+
+function playerFor(callIndex) {
+  return createAudioPlayer.mock.results[callIndex].value;
+}
+
+async function startPlaying(message, titles) {
+  const connection = makeConnection();
+  joinVoiceChannel.mockReturnValue(connection);
+  entersState.mockResolvedValue();
+  createYtDlpAudioStream.mockImplementation(async () => ({ stream: {}, process: makeProcess() }));
+  for (const title of titles) await enqueue(message, { title });
+  return connection;
+}
+
+describe("playback", () => {
+  test("skip stops the old player and yt-dlp, and plays the next song", async () => {
+    const message = makeMessage();
+    await startPlaying(message, ["Song A", "Song B"]);
+    const firstProcess = getAllQueues().get(message.guildId).ytdlpProcess;
+
+    await skip(message);
+
+    expect(firstProcess.kill).toHaveBeenCalled();
+    expect(playerFor(0).stop).toHaveBeenCalledWith(true);
+    expect(createAudioPlayer).toHaveBeenCalledTimes(2);
+    expect(getAllQueues().get(message.guildId).songs.map((s) => s.title)).toEqual(["Song B"]);
+  });
+
+  test("skipping the last song stops the audio", async () => {
+    const message = makeMessage();
+    await startPlaying(message, ["Song A"]);
+
+    await skip(message);
+
+    expect(playerFor(0).stop).toHaveBeenCalledWith(true);
+    expect(getAllQueues().get(message.guildId).player).toBeNull();
+  });
+
+  test("a stream error followed by Idle only moves on one song", async () => {
+    const message = makeMessage();
+    await startPlaying(message, ["Song A", "Song B", "Song C"]);
+
+    playerFor(0).emit("error", new Error("stream broke"));
+    playerFor(0).emit("idle");
+    await new Promise(setImmediate);
+
+    expect(getAllQueues().get(message.guildId).songs.map((s) => s.title)).toEqual(["Song B", "Song C"]);
+    expect(createAudioPlayer).toHaveBeenCalledTimes(2);
+  });
+
+  test("an old player going Idle after skip doesn't advance the queue again", async () => {
+    const message = makeMessage();
+    await startPlaying(message, ["Song A", "Song B", "Song C"]);
+
+    await skip(message);
+    playerFor(0).emit("idle");
+    await new Promise(setImmediate);
+
+    expect(getAllQueues().get(message.guildId).songs).toHaveLength(2);
+  });
+
+  test("a skip during play()'s await doesn't start the skipped song", async () => {
+    const message = makeMessage();
+    await startPlaying(message, ["Song A", "Song B", "Song C"]);
+    const process = makeProcess();
+    let finishSpawn;
+    createYtDlpAudioStream.mockImplementationOnce(
+      () => new Promise((resolve) => { finishSpawn = () => resolve({ stream: {}, process }); })
+    );
+
+    const slowSkip = skip(message); // Song B is now waiting on yt-dlp
+    await new Promise(setImmediate);
+    await skip(message); // moves on to Song C
+    finishSpawn();
+    await slowSkip;
+
+    expect(process.kill).toHaveBeenCalled();
+    expect(getAllQueues().get(message.guildId).songs.map((s) => s.title)).toEqual(["Song C"]);
+  });
+
+  test("being disconnected tears down once, however many songs have played", async () => {
+    const message = makeMessage();
+    const connection = await startPlaying(message, ["Song A"]);
+    await skip(message);
+    await enqueue(message, { title: "Song B" });
+    entersState.mockRejectedValue(new Error("timeout"));
+
+    connection.emit("disconnected");
+    await new Promise(setImmediate);
+
+    expect(connection.listenerCount("disconnected")).toBe(1);
+    expect(connection.destroy).toHaveBeenCalledTimes(1);
+    expect(getAllQueues().has(message.guildId)).toBe(false);
+  });
+
+  test("the idle timer doesn't destroy a connection twice or remove a newer queue", async () => {
+    const message = makeMessage();
+    const connection = await startPlaying(message, ["Song A"]);
+    jest.useFakeTimers();
+    try {
+      await skip(message); // starts the idle timer
+      connection.state = { status: "destroyed" }; // destroyed without going through us
+      const newer = { songs: [] };
+      getAllQueues().set(message.guildId, newer);
+
+      jest.advanceTimersByTime(5 * 60 * 1000);
+
+      expect(connection.destroy).not.toHaveBeenCalled();
+      expect(getAllQueues().get(message.guildId)).toBe(newer);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a failed voice connection clears the queue so later !play works", async () => {
+    const message = makeMessage();
+    const connection = makeConnection();
+    joinVoiceChannel.mockReturnValue(connection);
+    entersState.mockRejectedValueOnce(new Error("timeout"));
+
+    await enqueue(message, { title: "Song A" });
+
+    expect(connection.destroy).toHaveBeenCalled();
+    expect(getAllQueues().has(message.guildId)).toBe(false);
+  });
 });
 
 describe("skip", () => {
@@ -61,7 +214,7 @@ describe("skip", () => {
     const message = makeMessage();
     getAllQueues().set(message.guildId, {
       textChannel: message.channel,
-      connection: {},
+      connection: { destroy: jest.fn() },
       songs: [{ title: "Song A" }, { title: "Song B" }],
       player: null,
       ytdlpProcess: null,
@@ -71,7 +224,8 @@ describe("skip", () => {
 
     await skip(message);
 
-    expect(getAllQueues().get(message.guildId).songs).toEqual([{ title: "Song B" }]);
+    // play() then tears the queue down, because the voice connection failed
+    expect(getAllQueues().has(message.guildId)).toBe(false);
     expect(message.channel.send).toHaveBeenCalledWith({
       content: "Couldn't establish a stable voice connection.",
     });
@@ -152,7 +306,7 @@ describe("pause / resume", () => {
 
 describe("remove", () => {
   function seedQueue(guildId, songs, textChannel) {
-    getAllQueues().set(guildId, { textChannel, connection: {}, songs, player: null, ytdlpProcess: null, idleTimeout: null });
+    getAllQueues().set(guildId, { textChannel, connection: { destroy: jest.fn() }, songs, player: null, ytdlpProcess: null, idleTimeout: null });
   }
 
   test("rejects a non-numeric index", () => {
@@ -195,7 +349,7 @@ describe("remove", () => {
 
     await remove(message, "1");
 
-    expect(getAllQueues().get(message.guildId).songs).toEqual([{ title: "Song B" }]);
+    expect(getAllQueues().has(message.guildId)).toBe(false);
   });
 });
 
@@ -224,6 +378,20 @@ describe("checkQueue", () => {
   });
 });
 
+describe("checkQueue length", () => {
+  test("stays under Discord's message limit for a long queue", () => {
+    const message = makeMessage();
+    const songs = Array.from({ length: 100 }, (_, i) => ({ title: "x".repeat(100) + i, duration: 60 }));
+    getAllQueues().set(message.guildId, { songs });
+
+    checkQueue(message);
+
+    const { content } = message.channel.send.mock.calls[0][0];
+    expect(content.length).toBeLessThanOrEqual(2000);
+    expect(content).toMatch(/\.\.\.and \d+ more\n$/);
+  });
+});
+
 describe("enqueue", () => {
   test("adds to an existing, active queue instead of joining again", async () => {
     const message = makeMessage();
@@ -242,8 +410,7 @@ describe("enqueue", () => {
 
   test("joins the voice channel and starts a new queue when none exists", async () => {
     const message = makeMessage();
-    const connection = { on: jest.fn(), state: { status: "ready" } };
-    joinVoiceChannel.mockReturnValue(connection);
+    joinVoiceChannel.mockReturnValue(makeConnection());
     entersState.mockRejectedValueOnce(new Error("timeout")); // short-circuits play()
 
     await enqueue(message, { title: "Song A" });
@@ -251,7 +418,6 @@ describe("enqueue", () => {
     expect(joinVoiceChannel).toHaveBeenCalledWith(
       expect.objectContaining({ channelId: "voice-1", guildId: message.guildId })
     );
-    expect(getAllQueues().get(message.guildId).songs).toEqual([{ title: "Song A" }]);
   });
 
   test("re-joins if the previous connection for the guild was destroyed", async () => {
@@ -261,9 +427,9 @@ describe("enqueue", () => {
       connection: { state: { status: "destroyed" } },
       songs: [{ title: "Old Song" }],
     });
-    const connection = { on: jest.fn(), state: { status: "ready" } };
-    joinVoiceChannel.mockReturnValue(connection);
-    entersState.mockRejectedValueOnce(new Error("timeout"));
+    joinVoiceChannel.mockReturnValue(makeConnection());
+    entersState.mockResolvedValueOnce();
+    createYtDlpAudioStream.mockResolvedValueOnce({ stream: {}, process: makeProcess() });
 
     await enqueue(message, { title: "New Song" });
 

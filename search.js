@@ -10,15 +10,15 @@ async function search(args, config) {
   if (idFromUrl) return idFromUrl;
 
   const { youtubeApiKey, maxResults } = config;
-  const searchStringUrlEncoded = encodeURIComponent(args.join(" "));
 
   try {
-    const response = await axios.get(
-      `https://youtube.googleapis.com/youtube/v3/search?key=${youtubeApiKey}&part=snippet&type=video&maxResults=${maxResults}&q=${searchStringUrlEncoded}`
-    );
+    const response = await axios.get("https://youtube.googleapis.com/youtube/v3/search", {
+      params: { key: youtubeApiKey, part: "snippet", type: "video", maxResults, q: args.join(" ") },
+    });
     return response?.data?.items?.[0]?.id?.videoId ?? null;
   } catch (error) {
-    console.error(error);
+    // only the message - the full axios error includes the API key
+    console.error(`YouTube search failed: ${error.message}`);
     return null;
   }
 }
